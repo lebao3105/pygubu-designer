@@ -1,5 +1,6 @@
-
 [Leer en Español](LEEME.md)
+[French](LISEZMOI.md)
+[Tiếng Việt](README-vi.md)
 
 Welcome to Pygubu!
 ============================================
