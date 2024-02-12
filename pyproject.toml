@@ -20,6 +20,8 @@ classifiers = [
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
   "Intended Audience :: Developers",
@@ -32,7 +34,7 @@ dependencies = [
     "Mako >=1.1.4",
     "screeninfo >=0.8",
     "autopep8 >=1.7",
-    "pygubu >=0.31"
+    "pygubu >=0.33"
 ]
 dynamic = ["version"]
 
@@ -51,10 +53,17 @@ tkinterweb = ['tkinterweb']
 tkintertable = ['tkintertable']
 tkcalendar = ['tkcalendar']
 awesometkinter = ['AwesomeTkinter']
-customtkinter = ['customtkinter']
+customtkinter = ['customtkinter >=5.2.2', 'packaging', 'pillow']
 tkintermapview = ['tkintermapview']
-all = ['AwesomeTkinter', 'tkintertable', 'tksheet', 'ttkwidgets', 'tkinterweb',
-       'tkcalendar', 'customtkinter', 'tkintermapview']
+all = [
+  'AwesomeTkinter',
+  'tkintertable',
+  'tksheet',
+  'ttkwidgets',
+  'tkinterweb',
+  'tkcalendar',
+  'customtkinter >=5.2.2', 'packaging', 'pillow',
+  'tkintermapview']
 
 [tool.setuptools.dynamic]
 version = {attr = "pygubudesigner.__version__"}
