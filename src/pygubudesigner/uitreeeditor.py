@@ -17,7 +17,7 @@ import logging
 import os
 import tkinter as tk
 import xml.etree.ElementTree as ET
-from collections import Counter
+from collections import Counter, OrderedDict
 from functools import partial
 from tkinter import messagebox
 
@@ -42,6 +42,14 @@ from .layouteditor import LayoutEditor
 from .propertieseditor import PropertiesEditor
 from .util import trlog
 from .widgetdescr import WidgetMeta
+from pygubu.forms.widget import FieldWidget
+from pygubudesigner.properties.editors.forms import (
+    FormFieldNameEntry,
+    FormFieldNameSelector,
+)
+from pygubudesigner.services.project import Project
+from pygubu.component.plugin_manager import PluginManager
+
 
 logger = logging.getLogger("pygubu.designer")
 
@@ -61,6 +69,9 @@ class WidgetsTreeEditor:
         self.virtual_clipboard_for_duplicate = None
         self.duplicating = False
         self.duplicate_parent_iid = None
+        self.update_builders = {}
+        self.preview_update_cbid = None
+        self.scheduled_widget_updates = []
 
         self.treeview.filter_func = self.filter_match
 
@@ -102,6 +113,8 @@ class WidgetsTreeEditor:
         CommandPropertyBase.global_validator = self.is_command_valid
         # set global validator for bindings commands
         EventHandlerEditor.global_validator = self.is_binding_valid
+        # set global validator for form field name entry
+        FormFieldNameEntry.global_validator = self.is_form_fieldname_valid
 
         # Widget Editor
         pframe = app.builder.get_object("propertiesframe")
@@ -402,13 +415,20 @@ class WidgetsTreeEditor:
         # Prepare container layout options
         cinfo = self.get_container_info(item)
         cmanager = cinfo["manager"]
-        if cmanager is not None and cmanager != wdescr.container_manager:
+        if cmanager is None:
+            # Allow simple propagate option.
+            wdescr.container_manager = "pack"
+        elif cmanager != wdescr.container_manager:
             # Update widged description
             wdescr.container_manager = cmanager
+
+        # Prepare field name values
+        FormFieldNameSelector.FIELD_NAMES = self.get_form_fieldname_list()
 
         self.properties_editor.edit(wdescr)
         self.layout_editor.edit(wdescr, manager_options, cinfo)
         self.bindings_editor.edit(wdescr)
+        self.get_form_fieldname_list()
 
     def editor_hide_all(self):
         self.properties_editor.hide_all()
@@ -564,8 +584,7 @@ class WidgetsTreeEditor:
 
     def new_uidefinition(self):
         author = f"PygubuDesigner {pygubudesigner.__version__}"
-        uidef = UIDefinition(wmetaclass=WidgetMeta)
-        uidef.author = author
+        uidef = UIDefinition(wmetaclass=WidgetMeta, author=author)
         return uidef
 
     def tree_to_uidef(self, treeitem=None):
@@ -704,14 +723,17 @@ class WidgetsTreeEditor:
             root_classname = self.treedata[root].classname
             root_boclass = CLASS_MAP[root_classname].builder
             allowed_children = root_boclass.allowed_children
-            if allowed_children:
-                if classname not in allowed_children:
-                    if show_warnings:
-                        str_children = ", ".join(allowed_children)
-                        msg = _("Allowed children: %s.")
-                        logger.warning(msg, str_children)
-                    is_valid = False
-                    return is_valid
+            allowed_children = (
+                [] if allowed_children is None else allowed_children
+            )
+            canbe_parent = root_boclass.canbe_parent_of(new_boclass, classname)
+            if not canbe_parent:
+                if show_warnings:
+                    str_children = ", ".join(allowed_children)
+                    msg = _("Allowed children: %s.")
+                    logger.warning(msg, str_children)
+                is_valid = False
+                return is_valid
 
             children_count = len(self.treeview.get_children(root))
             maxchildren = root_boclass.maxchildren
@@ -726,11 +748,12 @@ class WidgetsTreeEditor:
                 is_valid = False
                 return is_valid
 
-            allowed_parents = new_boclass.allowed_parents
-            if (
-                allowed_parents is not None
-                and root_classname not in allowed_parents
-            ):
+            # allowed_parents = new_boclass.allowed_parents
+            # if (
+            #    allowed_parents is not None
+            #    and root_classname not in allowed_parents
+            # ):
+            if not new_boclass.canbe_child_of(root_boclass, root_classname):
                 if show_warnings:
                     msg = trlog(
                         _("{0} not allowed as parent of {1}"),
@@ -741,7 +764,7 @@ class WidgetsTreeEditor:
                 is_valid = False
                 return is_valid
 
-            if allowed_children is None and root_boclass.container is False:
+            if not canbe_parent and root_boclass.container is False:
                 if show_warnings:
                     msg = _("Not allowed, %s is not a container.")
                     logger.warning(msg, root_classname)
@@ -953,19 +976,17 @@ class WidgetsTreeEditor:
             None  # We no longer have a selected item in the treeview
         )
 
-    def load_file(self, filename):
+    def load_file(self, project: Project):
         """Load file into treeview"""
 
         self.counter.clear()
-        uidef = UIDefinition(wmetaclass=WidgetMeta)
-        uidef.load_file(filename)
-
         self.remove_all()
         self.previewer.remove_all()
         self.editor_hide_all()
 
-        dirname = os.path.dirname(os.path.abspath(filename))
+        dirname = project.fpath.parent
         self.previewer.resource_paths.append(dirname)
+        uidef = project.uidefinition
         for widget in uidef.widgets():
             self.populate_tree("", uidef, widget, from_file=True)
 
@@ -1107,30 +1128,92 @@ class WidgetsTreeEditor:
         # whether it makes sense to have some menus enabled or not.
         self.app.evaluate_menu_states()
 
-    def update_event(self, hint, obj):
+    def update_tree_data_display(self, item, data):
         """Updates tree colums when itemdata is changed."""
+        tree = self.treeview
+        item_text = self._treeitem_label(data)
+        if item_text != tree.item(item, "text"):
+            tree.item(item, text=item_text)
+        # if tree.parent(item) != '' and 'layout' in data:
+        if tree.parent(item) != "" and data.layout_required:
+            if data.manager == "grid":
+                row = data.layout_property("row")
+                col = data.layout_property("column")
+                values = tree.item(item, "values")
+                if row != values[1] or col != values[2]:
+                    values = (data.classname, row, col)
+                tree.item(item, values=values)
+
+    def preview_widget_update(self, item, hint, data):
+        """Update widget preview.
+        If posible, it will update widget properties live.
+        Otherwise, a full widget redraw is done.
+        """
+
+        full_redraw = (hint & WidgetMeta.PROPERTY_RO_CHANGED) | (
+            hint & WidgetMeta.LAYOUT_MANAGER_CHANGED
+        )
+        if full_redraw:
+            # Needs full redraw.
+            self.draw_widget(item)
+        else:
+            # Maybe just needs update.
+            preview_id = self.get_toplevel_parent(item)
+
+            widget_id = data.identifier
+            bclass = data.classname
+            widget = self.previewer.preview_for_widget(preview_id, widget_id)
+            if bclass not in self.update_builders:
+                builder = PluginManager.get_preview_builder_for(bclass)
+                builder = (
+                    CLASS_MAP[bclass].builder if builder is None else builder
+                )
+                self.update_builders[bclass] = builder(None, data)
+            builder = self.update_builders[bclass]
+            # Use copy here because preview builders can change data for preview
+            meta_copy = WidgetMeta(bclass, widget_id)
+            meta_copy.copy_properties(data)
+            builder.wmeta = meta_copy
+            builder.widget = widget
+
+            if hint & WidgetMeta.PROPERTY_CHANGED:
+                builder.configure()
+            if hint & WidgetMeta.LAYOUT_PROPERTY_CHANGED:
+                builder.layout()
+            if hint & WidgetMeta.BINDING_CHANGED:
+                # Do nothing now
+                pass
+            self.previewer.show_selected(preview_id, widget_id)
+
+    def update_event(self, hint, data):
+        """Manages notify event when data is changed."""
 
         if not self._listen_object_updates:
             return
 
-        tree = self.treeview
-        data = obj
-        item = self.get_item_by_data(obj)
-        item_text = self._treeitem_label(data)
+        item = self.get_item_by_data(data)
         if item:
-            if item_text != tree.item(item, "text"):
-                tree.item(item, text=item_text)
-            # if tree.parent(item) != '' and 'layout' in data:
-            if tree.parent(item) != "" and data.layout_required:
-                if data.manager == "grid":
-                    row = data.layout_property("row")
-                    col = data.layout_property("column")
-                    values = tree.item(item, "values")
-                    if row != values[1] or col != values[2]:
-                        values = (data.classname, row, col)
-                    tree.item(item, values=values)
-            self.draw_widget(item)
+            self.update_tree_data_display(item, data)
+            self.preview_widget_update(item, hint, data)
             self.app.set_changed()
+
+    def schedule_preview_update(self, item):
+        """Schedule a preview update.
+        Helps to reduce full redraw when moving widget in treeview with keyboard.
+        """
+        if item not in self.scheduled_widget_updates:
+            self.scheduled_widget_updates.append(item)
+        if self.preview_update_cbid is not None:
+            self.treeview.after_cancel(self.preview_update_cbid)
+        self.preview_update_cbid = self.treeview.after(
+            950, self.schedule_preview_update_execute
+        )
+
+    def schedule_preview_update_execute(self):
+        for item in self.scheduled_widget_updates:
+            self.draw_widget(item)
+        self.scheduled_widget_updates.clear()
+        self.preview_update_cbid = None
 
     def get_item_by_data(self, data):
         skey = None
@@ -1197,7 +1280,8 @@ class WidgetsTreeEditor:
                 # Always refresh preview for objects that don't
                 # require a layout, such as menus and notebook tabs.
                 if manager in ("pack", "place") or not layout_required:
-                    self.draw_widget(item)
+                    # self.draw_widget(item)
+                    self.schedule_preview_update(item)
             self.treeview.filter_restore()
 
     def on_item_move_down(self, event):
@@ -1219,7 +1303,8 @@ class WidgetsTreeEditor:
                 # Always refresh preview for objects that don't
                 # require a layout, such as menus and notebook tabs.
                 if manager in ("pack", "place") or not layout_required:
-                    self.draw_widget(item)
+                    # self.draw_widget(item)
+                    self.schedule_preview_update(item)
             self.treeview.filter_restore()
 
     #
@@ -1251,10 +1336,10 @@ class WidgetsTreeEditor:
 
                 if current_row != new_row:
                     data.layout_property("row", str(new_row))
-                    data.notify()
+                    data.notify(WidgetMeta.LAYOUT_PROPERTY_CHANGED)
                 if current_col != new_col:
                     data.layout_property("column", str(new_col))
-                    data.notify()
+                    data.notify(WidgetMeta.LAYOUT_PROPERTY_CHANGED)
             self.treeview.filter_restore()
 
     def _top_widget_iterator(self):
@@ -1262,6 +1347,21 @@ class WidgetsTreeEditor:
         for item in children:
             data = self.treedata[item]
             yield (item, data)
+
+    def _data_iterator(self, root=None):
+        start = "" if root is None else root
+        children = self.treeview.get_children(start)
+        for item in children:
+            data = self.treedata[item]
+            yield (item, data)
+        for item in children:
+            yield from self._data_iterator(item)
+
+    def get_tree_topitem_byid(self, wid):
+        for item, data in self._top_widget_iterator():
+            if data.identifier == wid:
+                return item
+        return None
 
     def get_top_widget_list(self):
         wlist = []
@@ -1280,6 +1380,17 @@ class WidgetsTreeEditor:
                 element = (item, label)
                 wlist.append(element)
         return wlist
+
+    def get_options_for_project_settings(self):
+        main_widget = OrderedDict()
+        main_menu = OrderedDict()
+        for item, data in self._top_widget_iterator():
+            label = f"{data.identifier} ({data.classname})"
+            if data.classname == "tk.Menu":
+                main_menu[data.identifier] = label
+            else:
+                main_widget[data.identifier] = label
+        return dict(main_widget=main_widget, main_menu=main_menu)
 
     def get_widget_class(self, item):
         return self.treedata[item].classname
@@ -1421,3 +1532,34 @@ class WidgetsTreeEditor:
         self.editor_edit(item, wmeta)
         self.draw_widget(item)
         self.app.set_changed()
+
+    def _is_form_field_class(self, classname: str):
+        builder = CLASS_MAP[classname].builder
+        if builder.class_ is not None:
+            return issubclass(builder.class_, FieldWidget)
+        return False
+
+    def _is_form_filedname_defined(self, fieldname: str):
+        is_defined = False
+        for item, data in self._data_iterator():
+            if self._is_form_field_class(data.classname):
+                fname = data.widget_property("field_name")
+                if not fname:
+                    fname = data.identifier
+                if fname == fieldname:
+                    is_defined = True
+                    break
+        return is_defined
+
+    def get_form_fieldname_list(self):
+        flist = []
+        for item, data in self._data_iterator():
+            if self._is_form_field_class(data.classname):
+                fname = data.widget_property("field_name")
+                if not fname:
+                    fname = data.identifier
+                flist.append(fname)
+        return flist
+
+    def is_form_fieldname_valid(self, fieldname: str):
+        return not self._is_form_filedname_defined(fieldname)

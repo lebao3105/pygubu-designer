@@ -18,16 +18,13 @@ pip install git+https://github.com/alejandroautalan/pygubu git+https://github.co
 
 TODO
 ====
+- BUG: create a pygubu dialog and generate code. Incorrect class hint generated
+  self.mainwindow: pygubu.builder.widgets.dialog = builder.get_object(
+            "settingsdialog", master)
 - Issue: redraw previews on theme change.
-- ttkstyles branch: add optiondb_initializer=None to builder and codebuilder.
-  or name it on_first_widget_cb. Function that will execute only once after
-  the first widget is created, generally the root widget.
 - Customtkinter 5 Issues on designer:
   Can't select SegmentedButton in Preview (can't click it)
   Click on tabview tab does not select tab in treeview.
-  F5 preview of CTk does not show images and shows warning when the
-  preview closes. This is because Ctk is another tk instance running on
-  another thread.
 - Add a mechanism to test code generation.
 - Treeview with scrollHelper. Srollbars are not shown depending on the
   treeview configuration or if columns are set stretch=true
@@ -74,32 +71,24 @@ My wish list?
   a group of properties. Example button "Expand": for pack manager will set
   expand=True, fill=both.
 
+- Add notebook, add tab,  add label to tab.
+  Should be displayed on center, y no tab sticky option is set.
+  Problem seems to be, the labels is ejecuting his layout configuration. Should not.
+  Solution 1: add manager type "none" or "parent". If manager of widget is none, the
+    parent widget is in charge of layout configuration.
 
 
 Button Bar
 ==========
 
-New Project, Open Project, Save, UndoButtons, Cut, copy, paste, delete,
-Generate code (generate files in disk, with configured names),
-Buttons for Actions on current layout Manager:
-  Align left, center, Align right, Expand.
-  
+Section: New, Open, Save, Save As
+Section: Cut, copy, paste, delete, UndoButtons?
+Section: Align left, center, Align right, Expand # Buttons for Actions on current layout Manager
+Section: Preview refresh
+Section: Project Properties, Generate code
+
 Example: Click Expand
   Manager Place: set expand=True, fill=both
-
-
-
-
-Project Notes:
-=============
-
-Posible project properties:
-
-name: Project Name
-path: Path to save generated files? Defaults to . (dot), same path as project.
-relative_path: use relative path for external files (eg image files)
-
-
 
 
 Theming notes:

@@ -25,6 +25,7 @@ import platform
 import sys
 import tkinter as tk
 import webbrowser
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -35,7 +36,13 @@ from pygubu.stockimage import StockImage, StockImageException
 
 import pygubudesigner
 import pygubudesigner.actions as actions
+import pygubudesigner.designerstyles as designerstyles
+
 from pygubudesigner import preferences as pref
+from pygubudesigner.services.project import Project
+from pygubudesigner.services.designersettings import DesignerSettings
+from pygubudesigner.services.projectsettings import ProjectSettings
+from pygubudesigner.services.aboutdialog import AboutDialog
 from pygubudesigner.codegen import ScriptGenerator
 from pygubudesigner.dialogs import AskSaveChangesDialog, ask_save_changes
 from pygubudesigner.widgets.componentpalette import ComponentPalette
@@ -50,6 +57,9 @@ from .uitreeeditor import WidgetsTreeEditor
 from .util import get_ttk_style, menu_iter_children, virtual_event
 from .util.keyboard import Key, key_bind
 from .util.screens import is_visible_in_screens, parse_geometry
+from .services.stylehandler import StyleHandler
+from .services.messagebox import show_error
+
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -71,27 +81,11 @@ def init_pygubu_widgets():
         except (ModuleNotFoundError, ImportError) as e:
             logger.exception(e)
             msg = _(f"Failed to load widget module: '{_module}'")
-            messagebox.showerror(_("Error"), msg)
+            det = traceback.format_exc()
+            show_error(None, _("Error"), msg, det)
 
     # Initialize designer plugins
     PluginManager.load_designer_plugins()
-
-    # initialize custom widgets
-    for path in map(Path, pref.get_custom_widgets()):
-        if not path.match("*.py"):
-            continue
-
-        dirname = str(path.parent)
-        modulename = path.name[:-3]
-        if dirname not in sys.path:
-            sys.path.append(dirname)
-
-        try:
-            importlib.import_module(modulename)
-        except Exception as e:
-            logger.exception(e)
-            msg = _(f"Failed to load custom widget module: '{path}'")
-            messagebox.showerror(_("Error"), msg)
 
     # Register custom properties
     load_custom_properties()
@@ -145,9 +139,11 @@ class PygubuDesigner:
         self.preview = None
         self.about_dialog = None
         self.preferences = None
-        self.script_generator = None
-        self.builder = pygubu.Builder(translator)
-        self.currentfile = None
+        self.project_settings = None
+        self.builder = pygubu.Builder(
+            translator, on_first_object=designerstyles.setup_ttk_styles
+        )
+        self.current_project = None
         self.is_changed = False
         self.current_title = "new"
 
@@ -205,14 +201,6 @@ class PygubuDesigner:
 
         self.builder.connect_callbacks(self)
 
-        # setup app preferences
-        self.setup_app_preferences()
-
-        #
-        # Setup tkk styles
-        #
-        self._setup_styles()
-
         # Customize OpenFiledialog window
         if sys.platform == "linux":
             file_dialog_hack = """
@@ -246,17 +234,29 @@ proc ::tk::dialog::file::Create {w class} {
         init_pygubu_widgets()
 
         # _pallete
-        self.fpalette = self.builder.get_object("fpalette")
-        self.create_component_palette(self.fpalette)
+        # self.fpalette = self.builder.get_object("fpalette")
+        # self.create_component_palette(self.fpalette)
+
+        # Tree palette
+        self.tree_palette = self.builder.get_object("tree_palette")
+        self.tree_palette.on_add_widget = self.on_add_widget_event
+        self.tree_palette.build_tree()
 
         # tree editor
         self.tree_editor = WidgetsTreeEditor(self)
-
-        # Tab Code
-        self.script_generator = ScriptGenerator(self)
-
+        # code generator
+        self.script_generator: ScriptGenerator = ScriptGenerator(self)
         # App bindings
         self._setup_app_bindings()
+
+        # setup app preferences
+        self.setup_app_preferences()
+
+        # project settings
+        self.project_settings = ProjectSettings(self.mainwindow, translator)
+        self.project_settings.on_settings_changed = (
+            self._on_project_settings_changed
+        )
 
     def run(self):
         self.mainwindow.protocol("WM_DELETE_WINDOW", self.__on_window_close)
@@ -416,42 +416,6 @@ proc ::tk::dialog::file::Create {w class} {
         # On preferences save binding
         w.bind("<<PygubuDesignerPreferencesSaved>>", self.on_preferences_saved)
 
-    def _setup_styles(self):
-        self.mainwindow.option_add("*Dialog.msg.width", 34)
-        self.mainwindow.option_add("*Dialog.msg.wrapLength", "6i")
-
-        s = get_ttk_style()
-        s.configure(
-            "ColorSelectorButton.Toolbutton", image=StockImage.get("mglass")
-        )
-        s.configure(
-            "ImageSelectorButton.Toolbutton", image=StockImage.get("mglass")
-        )
-        s.configure("ComponentPalette.Toolbutton", font="TkSmallCaptionFont")
-        s.configure("ComponentPalette.TNotebook.Tab", font="TkSmallCaptionFont")
-        s.configure(
-            "PanelTitle.TLabel",
-            background="#808080",
-            foreground="white",
-            font="TkSmallCaptionFont",
-        )
-        s.configure("Template.Toolbutton", padding=5)
-        # ToolbarFrame scroll buttons
-        s.configure(
-            ToolbarFrame.BTN_LEFT_STYLE, image=StockImage.get("arrow-left2")
-        )
-        s.configure(
-            ToolbarFrame.BTN_RIGHT_STYLE, image=StockImage.get("arrow-right2")
-        )
-        # Preview panel, Selection indicator color
-        s.configure("PreviewIndicator.TFrame", background="red")
-
-        if sys.platform == "linux":
-            # change background of comboboxes
-            color = s.lookup("TEntry", "fieldbackground")
-            s.map("TCombobox", fieldbackground=[("readonly", color)])
-            s.map("TSpinbox", fieldbackground=[("readonly", color)])
-
     def _setup_theme_menu(self):
         menu = self.builder.get_object("preview_themes_submenu")
         s = get_ttk_style()
@@ -569,10 +533,6 @@ proc ::tk::dialog::file::Create {w class} {
         self.mainwindow.geometry(geom)
         self.mainwindow.after_idle(self._check_window_visibility)
 
-        # Load preferred ttk theme
-        theme = pref.get_option("ttk_theme")
-        self._change_ttk_theme(theme)
-
     def _check_window_visibility(self):
         geom = pref.get_window_size()
         window_visible = is_visible_in_screens(geom)
@@ -593,7 +553,8 @@ proc ::tk::dialog::file::Create {w class} {
         s = get_ttk_style()
         try:
             s.theme_use(theme)
-            self._setup_styles()
+            logger.debug("ttk theme changed to: %s", theme)
+            designerstyles.setup_ttk_styles(self.mainwindow, theme)
             event_name = "<<PygubuDesignerTtkThemeChanged>>"
             self.mainwindow.event_generate(event_name)
         except tk.TclError:
@@ -648,7 +609,14 @@ proc ::tk::dialog::file::Create {w class} {
             logger.info(_("Project saved to %s"), fname)
             saved = True
         except Exception as e:
-            messagebox.showerror(_("Error"), str(e), parent=self.mainwindow)
+            msg = str(e)
+            det = traceback.format_exc()
+            show_error(
+                self.mainwindow,
+                _("Error"),
+                msg,
+                det,
+            )
         return saved
 
     def do_save_as(self):
@@ -663,12 +631,15 @@ proc ::tk::dialog::file::Create {w class} {
         return saved
 
     def save_file(self, filename):
-        uidefinition = self.tree_editor.tree_to_uidef()
-        uidefinition.save(filename)
-        self.currentfile = filename
+        project = self.current_project
+        if project is None:
+            project = Project()
+        project.uidefinition = self.tree_editor.tree_to_uidef()
+        project.save(filename)
+        self.current_project = project
         title = self.project_name()
         self.set_title(title)
-        self.rfiles_manager.addfile(filename)
+        self.rfiles_manager.addfile(str(filename))
 
     def set_changed(self, newvalue=True):
         if newvalue and not self.is_changed:
@@ -679,15 +650,22 @@ proc ::tk::dialog::file::Create {w class} {
         """Load xml into treeview"""
 
         try:
-            self.tree_editor.load_file(filename)
-            self.currentfile = filename
+            fpath = Path(filename).resolve()
+            project = Project.load(fpath)
+            self.tree_editor.load_file(project)
+            self.current_project = project
             title = self.project_name()
             self.set_title(title)
             self.set_changed(False)
-            self.rfiles_manager.addfile(filename)
-            self.script_generator.reset()
+            self.rfiles_manager.addfile(str(fpath))
+            # Reload palette with project custom widgets
+            prefixes = [Path(cw).stem for cw in project.custom_widgets]
+            self.tree_palette.project_custom_widget_prefixes = prefixes
+            self.tree_palette.build_tree()
         except Exception as e:
-            messagebox.showerror(_("Error"), str(e), parent=self.mainwindow)
+            msg = str(e)
+            det = traceback.format_exc()
+            show_error(self.mainwindow, _("Error"), msg, det)
 
     def do_file_open(self, filename=None):
         openfile = True
@@ -715,16 +693,16 @@ proc ::tk::dialog::file::Create {w class} {
         if new:
             self.previewer.remove_all()
             self.tree_editor.remove_all()
-            self.currentfile = None
+            self.current_project = None
             self.set_changed(False)
             self.set_title(self.project_name())
-            self.script_generator.reset()
+            StyleHandler.clear_definition_file()
 
     def on_file_save(self, event=None):
         file_saved = False
-        if self.currentfile:
+        if self.current_project:
             if self.is_changed:
-                file_saved = self.do_save(self.currentfile)
+                file_saved = self.do_save(self.current_project.fpath)
         else:
             file_saved = self.do_save_as()
         return file_saved
@@ -741,6 +719,13 @@ proc ::tk::dialog::file::Create {w class} {
         else:
             action = f"<<ACTION_{itemid}>>"
             self.mainwindow.event_generate(action)
+
+    # Project menu
+    def on_project_menuitem_clicked(self, itemid):
+        if itemid == "project_settings":
+            self._edit_project_settings()
+        if itemid == "project_codegen":
+            self._project_code_generate()
 
     # preview menu
     def on_previewmenu_action(self, itemid):
@@ -831,94 +816,48 @@ proc ::tk::dialog::file::Create {w class} {
         """
         self.mainwindow.event_generate(actions.TREE_ITEM_DUPLICATE)
 
-    def _create_about_dialog(self):
-        builder = pygubu.Builder(translator)
-        builder.add_from_file(str(DATA_DIR / "ui" / "about_dialog.ui"))
-        builder.add_resource_path(str(DATA_DIR / "images"))
-
-        dialog = builder.get_object("aboutdialog", self.mainwindow)
-        entry = builder.get_object("version")
-        txt = entry.cget("text")
-        txt = txt.replace("%version%", str(pygubu.__version__))
-        entry.configure(text=txt)
-        entry = builder.get_object("designer_version")
-        txt = entry.cget("text")
-        txt = txt.replace("%version%", str(pygubudesigner.__version__))
-        entry.configure(text=txt)
-
-        def on_ok_execute():
-            dialog.close()
-
-        def on_gpl3_clicked(e):
-            url = "https://www.gnu.org/licenses/gpl-3.0.html"
-            webbrowser.open_new_tab(url)
-
-        def on_mit_clicked(e):
-            url = "https://opensource.org/licenses/MIT"
-            webbrowser.open_new_tab(url)
-
-        def on_moreinfo_clicked(e):
-            url = "https://github.com/alejandroautalan/pygubu-designer"
-            webbrowser.open_new_tab(url)
-
-        dialog_callbacks = {
-            "on_ok_execute": on_ok_execute,
-            "on_gpl3_clicked": on_gpl3_clicked,
-            "on_mit_clicked": on_mit_clicked,
-            "on_moreinfo_clicked": on_moreinfo_clicked,
-        }
-        builder.connect_callbacks(dialog_callbacks)
-
-        return dialog
-
     def show_about_dialog(self):
         if self.about_dialog is None:
-            self.about_dialog = self._create_about_dialog()
-            self.about_dialog.run()
-        else:
-            self.about_dialog.show()
+            self.about_dialog = AboutDialog(self.mainwindow, translator)
+        self.about_dialog.run()
 
     def _edit_preferences(self):
         if self.preferences is None:
-            self.preferences = pref.PreferencesUI(self.mainwindow, translator)
-        self.preferences.dialog.run()
+            # self.preferences = pref.PreferencesUI(self.mainwindow, translator)
+            self.preferences = DesignerSettings(self.mainwindow, translator)
+        self.preferences.run()
+
+    def _edit_project_settings(self):
+        if self.current_project is None:
+            return
+        options = self.tree_editor.get_options_for_project_settings()
+        self.project_settings.setup(options)
+        self.project_settings.edit(self.current_project)
+        self.project_settings.run()
+
+    def _on_project_settings_changed(self, new_settings: dict):
+        self.current_project.set_full_settings(new_settings)
+        self.set_changed()
+
+    def _project_code_generate(self):
+        if self.current_project is None:
+            return
+        options = self.tree_editor.get_options_for_project_settings()
+        self.project_settings.setup(options)
+        self.project_settings.edit(self.current_project)
+        valid = self.project_settings.validate_for_codegen()
+        if valid:
+            self.script_generator.generate_code()
+        else:
+            self.project_settings.run()
 
     def project_name(self):
         name = None
-        if self.currentfile is None:
+        if self.current_project is None:
             name = _("newproject")
         else:
-            name = Path(self.currentfile).name
+            name = self.current_project.fpath.name
         return name
-
-    def nbmain_tab_changed(self, event):
-        if event.widget.index("current") == 1:  # Index 1 is the code-tab
-            self.script_generator.configure()
-            if pref.get_option("auto_generate_code") == "yes":
-                self.on_code_generate_clicked()
-
-    # Tab code management
-    def on_code_generate_clicked(self):
-        self.script_generator.on_code_generate_clicked()
-
-    def on_code_copy_clicked(self):
-        self.script_generator.on_code_copy_clicked()
-
-    def on_code_template_changed(self):
-        self.script_generator.on_code_template_changed()
-        if pref.get_option("auto_generate_code") == "yes":
-            self.on_code_generate_clicked()
-
-    def on_code_template_property_changed(self):
-        if (
-            pref.get_option("auto_generate_code") == "yes"
-            and pref.get_option("auto_generate_code_on_prop_change") == "yes"
-        ):
-            self.on_code_generate_clicked()
-        return True
-
-    def on_code_save_clicked(self):
-        self.script_generator.on_code_save_clicked()
 
     def setup_bottom_panel(self):
         self.log_panel = LogPanelManager(self)

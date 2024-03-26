@@ -34,7 +34,7 @@ from pygubu.widgets.combobox import Combobox
 from pygubu.widgets.scrollbarhelper import ScrollbarHelper
 
 EDITORS = {}
-KEY_PRESS_CB_MILISECONDS = 500
+KEY_PRESS_CB_MILISECONDS = 850
 
 
 def register_editor(name, class_):
@@ -42,6 +42,9 @@ def register_editor(name, class_):
 
 
 def create_editor(name, *args, **kw):
+    if name not in EDITORS:
+        msg = f"Trying to use an unregister editor named: {name}"
+        raise Exception(msg)
     editor = EDITORS[name](*args, **kw)
     return editor
 

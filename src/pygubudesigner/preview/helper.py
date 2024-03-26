@@ -204,9 +204,9 @@ class PreviewHelper:
         anchors = {"top": tk.SW, "bottom": tk.NW, "left": tk.NE, "right": tk.NW}
         self.indicators = {}
         for tag in anchors:
-            frame = ttk.Frame(
+            frame = tk.Frame(
                 self.canvas,
-                style="PreviewIndicator.TFrame",
+                class_="PreviewIndicatorFrame",
                 width=1,
                 height=1,
                 borderwidth=0,
@@ -281,6 +281,13 @@ class PreviewHelper:
             self._update_style_editor(widget)
         self._sel_id = identifier
         self._sel_widget = selected_id
+
+    def preview_for_widget(self, preview_id, widget_id):
+        if preview_id in self.previews:
+            preview = self.previews[preview_id]
+            widget = preview.get_widget_by_id(widget_id)
+            return widget
+        return None
 
     def delete(self, identifier):
         if identifier in self.previews:

@@ -61,6 +61,7 @@ class ToolbarFrame(ttk.Frame):
         self.fvport = fvport
         self.fcontent = fcontent
         self.fcstart = 0
+        self._xvstatus = [1.0, 1.0]
         self.SCROLL_INCREMENT = 50
         fvport.bind("<Configure>", self._reposition)
         fcontent.bind("<Configure>", self._reposition)
@@ -71,22 +72,43 @@ class ToolbarFrame(ttk.Frame):
 
     def _configure_mousewheel(self):
         BindManager.init_mousewheel_binding(self)
-        self.bind(
-            "<Enter>",
-            lambda event: BindManager.mousewheel_bind(self),
-            add="+",
-        )
-        self.bind(
-            "<Leave>", lambda event: BindManager.mousewheel_unbind(), add="+"
-        )
+        BindManager.mousewheel_bind(self)
         self.on_mousewheel = BindManager.make_onmousewheel_cb(self, "x", 2)
 
     def xview(self, mode=None, value=None, units=None):
         if mode == "scroll":
-            if value > 0:
-                self.scroll_right()
-            else:
-                self.scroll_left()
+            vp_width = self.fvport.winfo_width()
+            content_width = self.fcontent.winfo_reqwidth()
+            if content_width > vp_width:
+                if value > 0:
+                    self.scroll_right()
+                else:
+                    self.scroll_left()
+        if mode is None and value is None:
+            return self._xvstatus
+
+    def scroll_right(self):
+        newstart = self.fcstart - self.SCROLL_INCREMENT
+        cw = self.fcontent.winfo_reqwidth()
+        f_width = self.fvport.winfo_width()
+        limit = cw - f_width
+        if newstart > -(limit):
+            self.fcstart = newstart
+        elif self.fcstart != -limit:
+            self.fcstart = -limit
+            self._xvstatus[0] = 0
+            self._xvstatus[1] = 1
+        self.fcontent.place(x=self.fcstart)
+
+    def scroll_left(self):
+        newstart = self.fcstart + self.SCROLL_INCREMENT
+        if newstart <= 0:
+            self.fcstart = newstart
+        elif self.fcstart < 0:
+            self.fcstart = 0
+            self._xvstatus[0] = 1
+            self._xvstatus[1] = 0
+        self.fcontent.place(x=self.fcstart)
 
     def toggle_controls(self):
         self.controls_visible = not self.controls_visible
@@ -136,27 +158,6 @@ class ToolbarFrame(ttk.Frame):
 
         if self.controls_required != self.controls_visible:
             self.toggle_controls()
-
-    def scroll_right(self):
-        newstart = self.fcstart - self.SCROLL_INCREMENT
-        cw = self.fcontent.winfo_reqwidth()
-        f_width = self.fvport.winfo_width()
-        limit = cw - f_width
-        if newstart > -(limit):
-            self.fcstart = newstart
-            self.fcontent.place(x=self.fcstart)
-        elif self.fcstart != -limit:
-            self.fcstart = -limit
-            self.fcontent.place(x=self.fcstart)
-
-    def scroll_left(self):
-        newstart = self.fcstart + self.SCROLL_INCREMENT
-        if newstart <= 0:
-            self.fcstart = newstart
-            self.fcontent.place(x=self.fcstart)
-        elif self.fcstart < 0:
-            self.fcstart = 0
-            self.fcontent.place(x=self.fcstart)
 
 
 if __name__ == "__main__":
