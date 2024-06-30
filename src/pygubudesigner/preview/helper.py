@@ -23,8 +23,9 @@ from functools import partial
 from pygubu.stockimage import StockImage
 
 import pygubudesigner.actions as actions
-from pygubudesigner.widgets.ttkstyleentry import TtkStylePropertyEditor
-
+from pygubudesigner.properties.editors import TtkStylePropertyEditor
+from pygubudesigner.services.theming import ThemeChangedMonitor
+from ..preferences import get_preview_indicator_color
 from .preview import MenuPreview, Preview
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,14 @@ class PreviewHelper:
             actions.PREVIEW_TOPLEVEL_CLOSE_ALL,
             lambda e: self.close_toplevel_previews(),
         )
+        # monitor theme change to maintain selector color
+        self.tcmonitor = ThemeChangedMonitor(
+            canvas, self.update_indicators_color
+        )
+
+    def update_indicators_color(self):
+        for key, frame in self.indicators.items():
+            frame.configure(background=get_preview_indicator_color())
 
     def add_resource_path(self, path):
         self.resource_paths.append(path)
@@ -210,6 +219,7 @@ class PreviewHelper:
                 width=1,
                 height=1,
                 borderwidth=0,
+                background=get_preview_indicator_color(),
             )
             self.canvas.create_window(
                 -10, -10, window=frame, anchor=anchors[tag], tags=tag
@@ -283,11 +293,18 @@ class PreviewHelper:
         self._sel_widget = selected_id
 
     def preview_for_widget(self, preview_id, widget_id):
+        """Returns the live widget preview of widget_id."""
         if preview_id in self.previews:
             preview = self.previews[preview_id]
             widget = preview.get_widget_by_id(widget_id)
             return widget
         return None
+
+    def update_preview_bbox(self, preview_id):
+        """Updates the preview to the requested size of
+        the widget inside."""
+        if preview_id in self.previews:
+            self.previews[preview_id].update_window_bbox()
 
     def delete(self, identifier):
         if identifier in self.previews:
@@ -318,7 +335,11 @@ class PreviewHelper:
 
     def close_toplevel_previews(self):
         for top in self.toplevel_previews:
-            top.destroy()
+            try:
+                top.destroy()
+            except tk.TclError:
+                # the user closed the window.
+                pass
         self.toplevel_previews = []
 
     def preview_click_handler(self, preview_id, event=None):

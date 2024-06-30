@@ -1,7 +1,23 @@
 History
 =======
 
-Changes in project options branch (future next version)
+Changes for version 0.39.3
+
+  * Fix for issues #251 and #253
+  * Drop support for python 3.6 and 3.7 (was already not working)
+
+Changes for version 0.39.2
+
+  * Fix issue with project path with windows junction link. refs #249
+  * Fix code template error.
+  * Fix error when "live" updating preview properties
+  * Added new example for EditableTreeview
+
+Changes for version 0.39.1
+
+  * Add option to reset window layout. (#244 @jrezai)
+
+Changes for version 0.39
 
   * New UI Layout. Removed code generation Tab.
   * New project settings dialog.

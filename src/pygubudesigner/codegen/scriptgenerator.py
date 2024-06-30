@@ -15,6 +15,7 @@
 import keyword
 import logging
 import pathlib
+import codecs
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -76,7 +77,7 @@ class ScriptGenerator:
 
         output_dir = context["output_dir"]
         outfn = output_dir / (context["module_name"] + "ui.py")
-        with open(outfn, "wt") as outfile:
+        with codecs.open(outfn, "w", encoding="utf-8") as outfile:
             outfile.write(final_code)
             logger.info("Generated code file: %s", outfn)
 
@@ -92,7 +93,7 @@ class ScriptGenerator:
         outfn: pathlib.Path = output_dir / (context["module_name"] + ".py")
         # DO NOT overwrite user module.
         if not outfn.exists():
-            with open(outfn, "wt") as outfile:
+            with codecs.open(outfn, "w", encoding="utf-8") as outfile:
                 outfile.write(final_code)
                 logger.info("Generated code file: %s", outfn)
 
@@ -134,22 +135,16 @@ class ScriptGenerator:
 
         output_dir = context["output_dir"]
         outfn = output_dir / (context["module_name"] + "ui.py")
-        with open(outfn, "wt") as outfile:
+        with codecs.open(outfn, "w", encoding="utf-8") as outfile:
             outfile.write(final_code)
 
-        context["import_lines"] += (
-            "\nfrom "
-            + context["module_name"]
-            + "ui import "
-            + bcontext["class_name"]
-        )
         tpl = makolookup.get_template("scriptuser.py.mako")
         final_code = tpl.render(**context)
         final_code = self._format_code(final_code)
         outfn: pathlib.Path = output_dir / (context["module_name"] + ".py")
         # DO NOT overwrite user module.
         if not outfn.exists():
-            with open(outfn, "wt") as outfile:
+            with codecs.open(outfn, "w", encoding="utf-8") as outfile:
                 outfile.write(final_code)
                 logger.info("Generated code file: %s", outfn)
 
@@ -157,7 +152,7 @@ class ScriptGenerator:
         uidef = self.tree.tree_to_uidef()
         target = context["target"]
 
-        generator.with_i18n_support = False
+        # generator.with_i18n_support = False
         generator.add_import_line("tkinter", "tk")
         # Generate code
         code = generator.generate_app_widget(uidef, target)
@@ -174,7 +169,7 @@ class ScriptGenerator:
 
         output_dir = context["output_dir"]
         outfn = output_dir / (context["module_name"] + "ui.py")
-        with open(outfn, "wt") as outfile:
+        with codecs.open(outfn, "w", encoding="utf-8") as outfile:
             outfile.write(final_code)
             logger.info("Generated code file: %s", outfn)
 
@@ -185,7 +180,7 @@ class ScriptGenerator:
         outfn: pathlib.Path = output_dir2 / (context["module_name"] + "bo.py")
         # DO NOT overwrite user module.
         if not outfn.exists():
-            with open(outfn, "wt") as outfile:
+            with codecs.open(outfn, "w", encoding="utf-8") as outfile:
                 outfile.write(final_code)
                 logger.info("Generated code file: %s", outfn)
 
@@ -195,7 +190,7 @@ class ScriptGenerator:
         outfn: pathlib.Path = output_dir / (context["module_name"] + ".py")
         # DO NOT overwrite user module.
         if not outfn.exists():
-            with open(outfn, "wt") as outfile:
+            with codecs.open(outfn, "w", encoding="utf-8") as outfile:
                 outfile.write(final_code)
                 logger.info("Generated code file: %s", outfn)
 
@@ -230,6 +225,9 @@ class ScriptGenerator:
         # Style definitions
         use_ttk_styles = tk.getboolean(config["use_ttk_styledefinition_file"])
         ttk_styles_module = config["ttk_style_definition_file"]
+        if ttk_styles_module:
+            mpath = pathlib.Path(ttk_styles_module)
+            ttk_styles_module = mpath.stem
 
         use_first_object_cb = use_ttk_styles
         first_object_func = "None"

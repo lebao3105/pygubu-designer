@@ -3,6 +3,7 @@ import os
 import pathlib
 import logging
 import importlib
+import tkinter as tk
 
 from pygubu.component.uidefinition import UIDefinition
 from ..widgetdescr import WidgetMeta
@@ -55,7 +56,13 @@ class Project:
         self.custom_widgets: list = []
         self.settings: dict = {}
 
+    @property
+    def generate_code_onsave(self):
+        key = "generate_code_onsave"
+        return tk.getboolean(self.settings.get(key, False))
+
     def get_relative_path(self, path):
+        path = pathlib.Path(path).resolve()  # fix windows junction
         return os.path.relpath(path, start=self.fpath.parent)
 
     def save(self, filename):
@@ -77,18 +84,16 @@ class Project:
         self.custom_widgets = new_settings.pop("custom_widgets", [])
         self.settings = new_settings
 
+    def load_custom_widgets(self):
+        uidir = pathlib.Path(self.fpath).parent.resolve()
+        Project.load_widget_builders(uidir, self.custom_widgets)
+
     @staticmethod
-    def load(filename) -> "Project":
-        uidef = UIDefinition(wmetaclass=WidgetMeta)
-        uidef.load_file(filename)
-
-        uidir = pathlib.Path(filename).parent.resolve()
-
-        # Load custom widgets
+    def load_widget_builders(uidir: pathlib.Path, custom_widgets: list):
         path_list = []
         notfound_list = []
         # Xml will have relative paths to UI file directory
-        for cw in uidef.custom_widgets:
+        for cw in custom_widgets:
             cw_path: pathlib.Path = pathlib.Path(uidir, cw).resolve()
             if cw_path.exists():
                 path_list.append(cw_path)
@@ -105,6 +110,15 @@ class Project:
             # Load builders
             for path in path_list:
                 load_custom_widget(path)
+
+    @staticmethod
+    def load(filename) -> "Project":
+        uidef = UIDefinition(wmetaclass=WidgetMeta)
+        uidef.load_file(filename)
+        uidir = pathlib.Path(filename).parent.resolve()
+
+        # Load custom widgets
+        Project.load_widget_builders(uidir, uidef.custom_widgets)
 
         # Load theme file
         theme_file = uidef.project_settings.get("ttk_style_definition_file", "")

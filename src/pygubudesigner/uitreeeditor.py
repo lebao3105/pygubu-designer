@@ -21,15 +21,15 @@ from collections import Counter, OrderedDict
 from functools import partial
 from tkinter import messagebox
 
-from pygubu.builder import CLASS_MAP
+from pygubu.builder import CLASS_MAP, Builder
 from pygubu.component.uidefinition import UIDefinition
 from pygubu.stockimage import StockImage, StockImageException
 
 import pygubudesigner
 from pygubudesigner import preferences as pref
-from pygubudesigner.widgets import (
+from pygubudesigner.widgets import EventHandlerEditor
+from pygubudesigner.properties.editors import (
     CommandPropertyBase,
-    EventHandlerEditor,
     IdentifierPropertyEditor,
     TkVarPropertyEditor,
     NamedIDPropertyEditor,
@@ -69,9 +69,12 @@ class WidgetsTreeEditor:
         self.virtual_clipboard_for_duplicate = None
         self.duplicating = False
         self.duplicate_parent_iid = None
-        self.update_builders = {}
+        self.update_builder = None
+        self.update_bo = {}
         self.preview_update_cbid = None
         self.scheduled_widget_updates = []
+        self._stretch_cb = None
+        self.treeview.bind("<Configure>", self._on_tree_configure)
 
         self.treeview.filter_func = self.filter_match
 
@@ -180,6 +183,29 @@ class WidgetsTreeEditor:
         tree.bind_all(
             action.TREE_ITEM_PREVIEW_TOPLEVEL, self.on_preview_in_toplevel
         )
+
+    def _on_tree_configure(self, event):
+        if self._stretch_cb is not None:
+            self.treeview.after_cancel(self._stretch_cb)
+        self._stretch_cb = self.treeview.after(350, self._stretch_main_column)
+
+    def _stretch_main_column(self):
+        w = self.treeview.winfo_width()
+        stretch_col = "#0"
+        stretch_col_cwidth = 0
+        cols = [stretch_col]
+        cols.extend(self.treeview.cget("displaycolumns"))
+        csum = 0
+        for col in cols:
+            cwidth = self.treeview.column(col, "width")
+            if col == stretch_col:
+                stretch_col_cwidth = cwidth
+            csum += cwidth
+        space_left = w - csum - 4
+        if space_left > 0:
+            stretch_col_cwidth += space_left
+            self.treeview.column(stretch_col, width=stretch_col_cwidth)
+        self._stretch_cb = None
 
     def filter_match(self, tree, itemid, filter_value):
         txt = tree.item(itemid, "text").lower()
@@ -1150,39 +1176,52 @@ class WidgetsTreeEditor:
         Otherwise, a full widget redraw is done.
         """
 
-        full_redraw = (hint & WidgetMeta.PROPERTY_RO_CHANGED) | (
-            hint & WidgetMeta.LAYOUT_MANAGER_CHANGED
+        full_redraw = (
+            (hint & WidgetMeta.PROPERTY_RO_CHANGED)
+            | (hint & WidgetMeta.LAYOUT_MANAGER_CHANGED)
+            | (hint & WidgetMeta.PROPERTY_BLANKED)
         )
+
+        # FIXME: A full redraw is done when a property is blanked.
+        #        Maybe this can be improved in the future?
+
         if full_redraw:
             # Needs full redraw.
             self.draw_widget(item)
         else:
+            if self.update_builder is None:
+                self.update_builder = Builder()
             # Maybe just needs update.
             preview_id = self.get_toplevel_parent(item)
 
             widget_id = data.identifier
             bclass = data.classname
             widget = self.previewer.preview_for_widget(preview_id, widget_id)
-            if bclass not in self.update_builders:
-                builder = PluginManager.get_preview_builder_for(bclass)
-                builder = (
-                    CLASS_MAP[bclass].builder if builder is None else builder
+            if bclass not in self.update_bo:
+                bo_class = PluginManager.get_preview_builder_for(bclass)
+                bo_class = (
+                    CLASS_MAP[bclass].builder if bo_class is None else bo_class
                 )
-                self.update_builders[bclass] = builder(None, data)
-            builder = self.update_builders[bclass]
+                self.update_bo[bclass] = bo_class(self.update_builder, data)
+            wbuilder = self.update_bo[bclass]
             # Use copy here because preview builders can change data for preview
             meta_copy = WidgetMeta(bclass, widget_id)
             meta_copy.copy_properties(data)
-            builder.wmeta = meta_copy
-            builder.widget = widget
+            wbuilder.wmeta = meta_copy
+            wbuilder.widget = widget
 
             if hint & WidgetMeta.PROPERTY_CHANGED:
-                builder.configure()
+                wbuilder.configure()
             if hint & WidgetMeta.LAYOUT_PROPERTY_CHANGED:
-                builder.layout()
+                wbuilder.layout()
+                # FIXME: When propagate property is changed
+                # calculations are not correct unless a property
+                # is reconfigured ?
+                wbuilder.configure()
             if hint & WidgetMeta.BINDING_CHANGED:
                 # Do nothing now
                 pass
+            self.previewer.update_preview_bbox(preview_id)
             self.previewer.show_selected(preview_id, widget_id)
 
     def update_event(self, hint, data):

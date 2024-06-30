@@ -54,11 +54,12 @@ from .preview import PreviewHelper
 from .properties import load_custom_properties
 from .rfilemanager import RecentFilesManager
 from .uitreeeditor import WidgetsTreeEditor
-from .util import get_ttk_style, menu_iter_children, virtual_event
+from .util import menu_iter_children, virtual_event, enable_dpi
 from .util.keyboard import Key, key_bind
 from .util.screens import is_visible_in_screens, parse_geometry
 from .services.stylehandler import StyleHandler
 from .services.messagebox import show_error
+from .services.theming import get_ttk_style
 
 
 # Initialize logger
@@ -146,11 +147,16 @@ class PygubuDesigner:
         self.current_project = None
         self.is_changed = False
         self.current_title = "new"
+        self.mbox_title = _("Pygubu Designer")
 
         self.builder.add_from_file(str(DATA_DIR / "ui" / "pygubu-ui.ui"))
         self.builder.add_resource_path(str(DATA_DIR / "images"))
 
         in_macos = sys.platform == "darwin"
+
+        # Enable DPI aware
+        enable_dpi()
+
         # build main ui
         self.mainwindow = self.builder.get_object("mainwindow")
         self.main_menu = self.builder.get_object("mainmenu", self.mainwindow)
@@ -257,6 +263,8 @@ proc ::tk::dialog::file::Create {w class} {
         self.project_settings.on_settings_changed = (
             self._on_project_settings_changed
         )
+        # load maindock state
+        self.load_dockframe_layout()
 
     def run(self):
         self.mainwindow.protocol("WM_DELETE_WINDOW", self.__on_window_close)
@@ -265,6 +273,7 @@ proc ::tk::dialog::file::Create {w class} {
     def __on_window_close(self):
         """Manage WM_DELETE_WINDOW protocol."""
         if self.on_close_execute():
+            self.previewer.close_toplevel_previews()
             self.mainwindow.withdraw()
             self.mainwindow.destroy()
 
@@ -608,6 +617,8 @@ proc ::tk::dialog::file::Create {w class} {
             self.set_changed(False)
             logger.info(_("Project saved to %s"), fname)
             saved = True
+            if self.generate_code_on_save():
+                self._project_code_generate()
         except Exception as e:
             msg = str(e)
             det = traceback.format_exc()
@@ -658,10 +669,7 @@ proc ::tk::dialog::file::Create {w class} {
             self.set_title(title)
             self.set_changed(False)
             self.rfiles_manager.addfile(str(fpath))
-            # Reload palette with project custom widgets
-            prefixes = [Path(cw).stem for cw in project.custom_widgets]
-            self.tree_palette.project_custom_widget_prefixes = prefixes
-            self.tree_palette.build_tree()
+            self.reload_component_palette()
         except Exception as e:
             msg = str(e)
             det = traceback.format_exc()
@@ -716,10 +724,14 @@ proc ::tk::dialog::file::Create {w class} {
     def on_edit_menuitem_clicked(self, itemid):
         if itemid == "edit_preferences":
             self._edit_preferences()
+            
+        elif itemid == "reset_layout":
+            self._reset_layout()            
+            
         else:
             action = f"<<ACTION_{itemid}>>"
             self.mainwindow.event_generate(action)
-
+            
     # Project menu
     def on_project_menuitem_clicked(self, itemid):
         if itemid == "project_settings":
@@ -826,9 +838,23 @@ proc ::tk::dialog::file::Create {w class} {
             # self.preferences = pref.PreferencesUI(self.mainwindow, translator)
             self.preferences = DesignerSettings(self.mainwindow, translator)
         self.preferences.run()
+        
+    def _reset_layout(self):
+        """
+        Reset the docked frames back to their default positions.
+        """
+        self.on_dockframe_changed(reset_layout=True)
+        msg = _("Restart Pygubu Designer\nfor changes to take effect.")
+        messagebox.showinfo(self.mbox_title, msg, parent=self.mainwindow)         
+
+    def _require_project_open(self):
+        if self.current_project is None:
+            msg = _("Open a project first.")
+            messagebox.showinfo(self.mbox_title, msg, parent=self.mainwindow)
+        return self.current_project is not None
 
     def _edit_project_settings(self):
-        if self.current_project is None:
+        if not self._require_project_open():
             return
         options = self.tree_editor.get_options_for_project_settings()
         self.project_settings.setup(options)
@@ -838,9 +864,10 @@ proc ::tk::dialog::file::Create {w class} {
     def _on_project_settings_changed(self, new_settings: dict):
         self.current_project.set_full_settings(new_settings)
         self.set_changed()
+        self.reload_component_palette()
 
     def _project_code_generate(self):
-        if self.current_project is None:
+        if not self._require_project_open():
             return
         options = self.tree_editor.get_options_for_project_settings()
         self.project_settings.setup(options)
@@ -848,8 +875,17 @@ proc ::tk::dialog::file::Create {w class} {
         valid = self.project_settings.validate_for_codegen()
         if valid:
             self.script_generator.generate_code()
+            msg = _("Project code generated.")
+            logger.info(msg)
         else:
             self.project_settings.run()
+
+    def generate_code_on_save(self):
+        return (
+            False
+            if self.current_project is None
+            else self.current_project.generate_code_onsave
+        )
 
     def project_name(self):
         name = None
@@ -875,6 +911,59 @@ proc ::tk::dialog::file::Create {w class} {
 
     def log_message(self, msg, level):
         self.log_panel.log_message(msg, level)
+
+    def reload_component_palette(self):
+        """Reload palette with project custom widgets."""
+        project = self.current_project
+        prefixes = [Path(cw).stem for cw in project.custom_widgets]
+        current_prefixes = self.tree_palette.project_custom_widget_prefixes
+
+        prefixes.sort()
+        current_prefixes.sort()
+        if prefixes != current_prefixes:
+            try:
+                project.load_custom_widgets()
+                self.tree_palette.project_custom_widget_prefixes = prefixes
+                self.tree_palette.build_tree()
+            except Exception as e:
+                msg = str(e)
+                det = traceback.format_exc()
+                show_error(
+                    self.mainwindow,
+                    _("Error"),
+                    msg,
+                    det,
+                )
+
+    def on_dockframe_changed(self, event=None, reset_layout=False):
+        """
+        Save current layout of maindock widget.
+        
+        Arguments:
+        
+        - event
+        
+        - reset_layout: used for resetting the docked frames
+        back to their default locations/positions.
+        """
+        
+        # Should we reset the layout back to the defaults?
+        if reset_layout:
+            dock_layout = None
+        else:
+            dock = self.builder.get_object("maindock")
+            dock_layout = dock.save_layout()
+            
+        pref.save_maindock_layout(dock_layout)
+
+    def load_dockframe_layout(self):
+        """Load layout for maindock widget."""
+        layout = pref.get_maindock_layout()
+        try:
+            dock = self.builder.get_object("maindock")
+            dock.load_layout(layout)
+        except Exception:
+            logger.debug("Error loading maindock layout")
 
 
 def start_pygubu():
